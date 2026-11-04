@@ -6,13 +6,18 @@ import streamlit as st
 from dotenv import load_dotenv
 from elasticsearch import Elasticsearch
 
+from report import generate_report
+
 load_dotenv()
 
-INDEX = "before-you-rent-dogparks"
+PARKS_INDEX = "before-you-rent-dogparks"
+CASES_INDEX = "before-you-rent-311"
 RADIUS_M = 1000
+CASE_RADIUS_M = 50
 METERS_PER_MILE = 1609.344
 ADDRESS_URL = "https://data.sf.gov/resource/3mea-di5p.json"
-SOURCE_URL = "https://data.sf.gov/d/38b7-6db3"
+PARKS_SOURCE_URL = "https://data.sf.gov/d/38b7-6db3"
+CASES_SOURCE_URL = "https://data.sf.gov/d/vw6y-z8j6"
 
 st.set_page_config(
     page_title="Before You Rent",
@@ -83,7 +88,7 @@ def nearest_address(lat, lon):
 @st.cache_data(ttl=300)
 def get_dog_parks(lat, lon):
     result = get_client().search(
-        index=INDEX,
+        index=PARKS_INDEX,
         query={
             "bool": {
                 "filter": {
@@ -113,13 +118,267 @@ def get_dog_parks(lat, lon):
     ]
 
 
+@st.cache_data(ttl=300)
+def get_cases(lat, lon):
+    result = get_client().search(
+        index=CASES_INDEX,
+        query={
+            "bool": {
+                "filter": {
+                    "geo_distance": {
+                        "distance": f"{CASE_RADIUS_M}m",
+                        "location": {"lat": lat, "lon": lon},
+                    }
+                }
+            }
+        },
+        sort=[
+            {"requested_datetime": {"order": "desc", "missing": "_last"}},
+            {"service_request_id": "asc"},
+        ],
+        size=100,
+        track_total_hits=True,
+        aggs={
+            "categories": {
+                "terms": {"field": "service_name", "size": 15},
+            }
+        },
+    )
+
+    return {
+        "total": result["hits"]["total"]["value"],
+        "records": [hit["_source"] for hit in result["hits"]["hits"]],
+        "categories": {
+            b["key"]: b["doc_count"]
+            for b in result["aggregations"]["categories"]["buckets"]
+        },
+    }
+
+
+@st.cache_data(ttl=300)
+def get_case_window():
+    result = get_client().search(
+        index=CASES_INDEX,
+        size=0,
+        aggs={
+            "earliest": {"min": {"field": "requested_datetime"}},
+            "latest": {"max": {"field": "requested_datetime"}},
+        },
+    )
+    aggs = result["aggregations"]
+    return (
+        (aggs["earliest"].get("value_as_string") or "")[:10],
+        (aggs["latest"].get("value_as_string") or "")[:10],
+    )
+
+
 def miles(meters):
     return meters / METERS_PER_MILE
 
 
+def display_date(value):
+    return value[:10] if value else "Unknown"
+
+
+def show_dog_parks(choice, parks):
+    st.subheader("Dog play areas")
+    st.metric(
+        f"Within {miles(RADIUS_M):.1f} miles ({RADIUS_M / 1000:g} km)",
+        len(parks),
+    )
+
+    st.warning(
+        "Distances are straight-line from the address, not walking routes, "
+        "so a hill, freeway, or fence line can make the real trip longer. "
+        "Only parks maintained by SF Recreation & Parks are included; "
+        "none nearby does not mean there is nowhere to take a dog."
+    )
+
+    if not parks:
+        st.info(f"No dog play areas found within {RADIUS_M / 1000:g} km.")
+        return
+
+    points = [{"lat": choice["lat"], "lon": choice["lon"], "color": "#d62728"}]
+    points += [
+        {"lat": p["location"]["lat"], "lon": p["location"]["lon"], "color": "#2ca02c"}
+        for p in parks
+    ]
+    st.map(pd.DataFrame(points), latitude="lat", longitude="lon", color="color")
+    st.caption("Red: the address. Green: dog play areas.")
+
+    st.markdown("**Nearest first**")
+
+    for park in parks:
+        lat, lon = park["location"]["lat"], park["location"]["lon"]
+        near = nearest_address(lat, lon)
+        distance = f"{miles(park['distance_m']):.2f} mi"
+
+        with st.expander(f"{distance} · {park['facility'] or park['park']}"):
+            st.write(f"**{park['facility'] or park['park']}**")
+            st.write(f"Park: {park['park']}")
+            if near:
+                st.write(f"Near: {near}")
+                st.caption(
+                    "Closest street address to the play area’s center, "
+                    "so treat it as approximate."
+                )
+            if park.get("area_number"):
+                st.caption(f"Area: {park['area_number']}")
+            if park.get("square_feet"):
+                st.caption(f"Size: {park['square_feet']:,.0f} sq ft")
+            st.caption(
+                f"Straight-line distance: {park['distance_m']:,.0f} m "
+                f"from {choice['label'].split(',')[0].title()}"
+            )
+            st.link_button(
+                "Open in Google Maps",
+                f"https://www.google.com/maps/search/?api=1&query={lat},{lon}",
+            )
+
+    st.link_button("Open the dog play area dataset", PARKS_SOURCE_URL)
+
+
+def show_cases(cases, window):
+    st.subheader("311 cases near this address")
+    st.metric(
+        f"Within {CASE_RADIUS_M} m, {window[0]} to {window[1]}",
+        cases["total"],
+    )
+
+    st.warning(
+        "311 cases are reports from the public, placed near this address by "
+        "coordinates. They are not necessarily about this building, may "
+        "overlap or repeat, and “Closed” does not necessarily mean the "
+        f"problem was fixed. Only requests from {window[0]} to {window[1]} "
+        "are loaded, so this is not a complete history."
+    )
+
+    if not cases["records"]:
+        st.info(f"No 311 cases found within {CASE_RADIUS_M} m in this period.")
+        return
+
+    st.markdown("**By category**")
+    st.dataframe(
+        pd.DataFrame(
+            {"Category": list(cases["categories"]), "Cases": list(cases["categories"].values())}
+        ),
+        hide_index=True,
+        width="stretch",
+    )
+
+    st.markdown("**Newest first**")
+    st.caption(
+        f"Showing {min(len(cases['records']), 25)} of {cases['total']:,} matching cases."
+    )
+
+    for record in cases["records"][:25]:
+        filed = display_date(record.get("requested_datetime"))
+        category = record.get("service_name") or "Unknown"
+        status = record.get("status") or "Unknown"
+        case_id = record["service_request_id"]
+
+        with st.expander(f"{filed} · {category} · {status} · #{case_id}"):
+            if record.get("service_subtype"):
+                st.caption(f"Type: {record['service_subtype']}")
+            notes = " ".join(
+                part
+                for part in (record.get("status_notes"), record.get("service_details"))
+                if part
+            )
+            st.text(notes or "No notes recorded.")
+            st.caption(f"Agency: {record.get('agency') or 'Unknown'}")
+            st.caption(f"Reported address: {record.get('address') or 'Unknown'}")
+            st.caption(f"Source case number: {case_id}")
+
+    st.link_button("Open the original 311 dataset", CASES_SOURCE_URL)
+
+
+def show_report(choice, cases, parks, window):
+    st.subheader("Report for prospective tenants")
+
+    selected_cases = cases["records"][:40] if cases else []
+    st.caption(
+        "The AI report uses the category counts, the "
+        f"{len(selected_cases)} most recent 311 cases within "
+        f"{CASE_RADIUS_M} m, and the nearby dog play areas. "
+        "Each case’s notes are limited to 500 characters."
+    )
+
+    report_key = (
+        choice["label"],
+        tuple(c["service_request_id"] for c in selected_cases),
+        tuple((p["funcarea_id"], round(p["distance_m"])) for p in parks),
+    )
+
+    if st.button("Generate report", type="primary"):
+        try:
+            with st.spinner("Reading 311 cases..."):
+                report = generate_report(
+                    choice["label"],
+                    CASE_RADIUS_M,
+                    f"{window[0]} to {window[1]}",
+                    cases["categories"] if cases else {},
+                    selected_cases,
+                    parks,
+                )
+            st.session_state["tenant_report"] = {"key": report_key, "report": report}
+        except Exception:
+            st.error(
+                "Could not generate the report. Check the Mistral API key, "
+                "model access, and network connection, then retry. "
+                "The data above is still available."
+            )
+
+    saved = st.session_state.get("tenant_report")
+
+    if not saved or saved["key"] != report_key:
+        return
+
+    report = saved["report"]
+    evidence_by_id = {c["service_request_id"]: c for c in selected_cases}
+
+    st.markdown("**Summary**")
+    st.write(report["summary"])
+    st.markdown("**Dog parks**")
+    st.write(report["dog_parks"])
+
+    if not report["findings"]:
+        st.info(
+            "The supplied records did not provide enough information "
+            "for specific questions to ask."
+        )
+
+    for i, finding in enumerate(report["findings"], start=1):
+        st.markdown(f"**Finding {i}**")
+        st.write(finding["observation"])
+        st.write("Ask the landlord:", finding["landlord_question"])
+
+        with st.expander(f"Supporting cases for finding {i}"):
+            for case_id in finding["case_ids"]:
+                source = evidence_by_id[case_id]
+                st.caption(
+                    f"#{case_id} · {display_date(source.get('requested_datetime'))} · "
+                    f"{source.get('service_name') or 'Unknown'} · "
+                    f"{source.get('status') or 'Unknown'}"
+                )
+                st.text(
+                    " ".join(
+                        part
+                        for part in (source.get("status_notes"), source.get("service_details"))
+                        if part
+                    )
+                    or "No notes recorded."
+                )
+
+    st.caption(
+        "AI-generated from public records. It can be wrong, and it cannot "
+        "tell you the condition of this building. Verify with the landlord."
+    )
+
+
 st.title("Before You Rent")
 st.write(
-    "Find dog play areas near an address "
+    "See the dog play areas and 311 activity near an address "
     "before you sign a lease."
 )
 
@@ -178,67 +437,33 @@ else:
 if choice is None:
     st.stop()
 
+st.header(choice["label"])
+
 try:
     parks = get_dog_parks(choice["lat"], choice["lon"])
 except Exception:
+    parks = None
     st.error(
         "Could not retrieve dog parks. Check your Elasticsearch "
         "connection, API key, and index name."
     )
-    st.stop()
 
-st.subheader(choice["label"])
-st.metric(
-    f"Dog play areas within {miles(RADIUS_M):.1f} miles ({RADIUS_M / 1000:g} km)",
-    len(parks),
-)
+try:
+    cases = get_cases(choice["lat"], choice["lon"])
+    window = get_case_window()
+except Exception:
+    cases = None
+    window = None
+    st.error(
+        "Could not retrieve 311 cases. Check your Elasticsearch "
+        "connection, API key, and index name."
+    )
 
-st.warning(
-    "Distances are straight-line from the address, not walking routes, "
-    "so a hill, freeway, or fence line can make the real trip longer. "
-    "Only parks maintained by SF Recreation & Parks are included; "
-    "none nearby does not mean there is nowhere to take a dog."
-)
+if parks is not None:
+    show_dog_parks(choice, parks)
 
-if not parks:
-    st.info(f"No dog play areas found within {RADIUS_M / 1000:g} km.")
-    st.stop()
+if cases is not None:
+    show_cases(cases, window)
 
-points = [{"lat": choice["lat"], "lon": choice["lon"], "color": "#d62728"}]
-points += [
-    {"lat": p["location"]["lat"], "lon": p["location"]["lon"], "color": "#2ca02c"}
-    for p in parks
-]
-st.map(pd.DataFrame(points), latitude="lat", longitude="lon", color="color")
-st.caption("Red: the address. Green: dog play areas.")
-
-st.subheader("Nearest first")
-
-for park in parks:
-    lat, lon = park["location"]["lat"], park["location"]["lon"]
-    near = nearest_address(lat, lon)
-    distance = f"{miles(park['distance_m']):.2f} mi"
-
-    with st.expander(f"{distance} · {park['facility'] or park['park']}"):
-        st.write(f"**{park['facility'] or park['park']}**")
-        st.write(f"Park: {park['park']}")
-        if near:
-            st.write(f"Near: {near}")
-            st.caption(
-                "Closest street address to the play area’s center, "
-                "so treat it as approximate."
-            )
-        if park.get("area_number"):
-            st.caption(f"Area: {park['area_number']}")
-        if park.get("square_feet"):
-            st.caption(f"Size: {park['square_feet']:,.0f} sq ft")
-        st.caption(
-            f"Straight-line distance: {park['distance_m']:,.0f} m "
-            f"from {choice['label'].split(',')[0].title()}"
-        )
-        st.link_button(
-            "Open in Google Maps",
-            f"https://www.google.com/maps/search/?api=1&query={lat},{lon}",
-        )
-
-st.link_button("Open the original DataSF dataset", SOURCE_URL)
+if parks is not None and cases is not None:
+    show_report(choice, cases, parks, window)
