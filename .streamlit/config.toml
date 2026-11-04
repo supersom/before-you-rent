@@ -1,0 +1,14 @@
+# Before You Rent — Streamlit theme. Swap the three colors below to match the logo.
+[theme]
+base = "light"
+primaryColor = "#E8742B"            # logo accent (buttons, focus, links)
+backgroundColor = "#F6F1E7"         # warm paper
+secondaryBackgroundColor = "#FFFFFF" # cards / inputs
+textColor = "#14213D"               # ink
+font = "sans serif"
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false

@@ -19,10 +19,31 @@ ADDRESS_URL = "https://data.sf.gov/resource/3mea-di5p.json"
 PARKS_SOURCE_URL = "https://data.sf.gov/d/38b7-6db3"
 CASES_SOURCE_URL = "https://data.sf.gov/d/vw6y-z8j6"
 
+LOGO = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "logo.png")
+
 st.set_page_config(
     page_title="Before You Rent",
-    page_icon="🐕",
+    page_icon="🏠",
     layout="centered",
+    initial_sidebar_state="collapsed",
+)
+
+# Type scale and hierarchy for a projector; colors live in .streamlit/config.toml.
+st.markdown(
+    """
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&display=swap" rel="stylesheet">
+<style>
+  h1, h2, h3 { font-family: Fraunces, Georgia, serif !important; letter-spacing: -0.01em; }
+  h1 { font-size: 2.6rem !important; line-height: 1.1 !important; }
+  h2 { font-size: 1.7rem !important; }
+  h3 { font-size: 1.3rem !important; }
+  .byr-tag { color: #5B6473; font-size: 1.05rem; margin-top: -0.6rem; margin-bottom: 1rem; }
+  .byr-stack { color: #5B6473; font-size: .85rem; border-top: 1px solid #D9D1C0; padding-top: .5rem; margin-top: .75rem; }
+  div[data-testid="stMetricValue"] { font-family: Fraunces, serif; font-size: 2.2rem; }
+  .block-container { padding-top: 1.5rem; max-width: 880px; }
+</style>
+""",
+    unsafe_allow_html=True,
 )
 
 
@@ -374,9 +395,20 @@ def show_report(choice, cases, parks, window):
         "AI-generated from public records. It can be wrong, and it cannot "
         "tell you the condition of this building. Verify with the landlord."
     )
+    st.markdown(
+        '<div class="byr-stack"><b>Elasticsearch:</b> geo_distance · terms aggregation · '
+        '_geo_distance sort · min/max aggregations &nbsp;&nbsp; '
+        '<b>Mistral:</b> ' + os.getenv("MISTRAL_MODEL", "mistral-small-latest") +
+        ' · JSON mode · schema-validated, case IDs checked against the index</div>',
+        unsafe_allow_html=True,
+    )
 
 
+if os.path.exists(LOGO):
+    st.logo(LOGO, size="large")
+    st.image(LOGO, width=72)
 st.title("Before You Rent")
+st.markdown('<p class="byr-tag">Know the block before you sign.</p>', unsafe_allow_html=True)
 st.write(
     "See the dog play areas and 311 activity near an address "
     "before you sign a lease."
