@@ -12,12 +12,15 @@ load_dotenv()
 
 PARKS_INDEX = "before-you-rent-dogparks"
 CASES_INDEX = "before-you-rent-311"
+STOPS_INDEX = "before-you-rent-muni"
 RADIUS_M = 1000
+STOPS_SHOWN = 5
 CASE_RADIUS_M = 50
 METERS_PER_MILE = 1609.344
 ADDRESS_URL = "https://data.sf.gov/resource/3mea-di5p.json"
 PARKS_SOURCE_URL = "https://data.sf.gov/d/38b7-6db3"
 CASES_SOURCE_URL = "https://data.sf.gov/d/vw6y-z8j6"
+STOPS_SOURCE_URL = "https://data.sf.gov/d/i28k-bkz6"
 
 st.set_page_config(
     page_title="Before You Rent",
@@ -116,6 +119,42 @@ def get_dog_parks(lat, lon):
         {**hit["_source"], "distance_m": hit["sort"][0]}
         for hit in result["hits"]["hits"]
     ]
+
+
+@st.cache_data(ttl=300)
+def get_stops(lat, lon):
+    result = get_client().search(
+        index=STOPS_INDEX,
+        query={
+            "bool": {
+                "filter": {
+                    "geo_distance": {
+                        "distance": f"{RADIUS_M}m",
+                        "location": {"lat": lat, "lon": lon},
+                    }
+                }
+            }
+        },
+        sort=[
+            {
+                "_geo_distance": {
+                    "location": {"lat": lat, "lon": lon},
+                    "order": "asc",
+                    "unit": "m",
+                }
+            }
+        ],
+        size=STOPS_SHOWN,
+        track_total_hits=True,
+    )
+
+    return {
+        "total": result["hits"]["total"]["value"],
+        "records": [
+            {**hit["_source"], "distance_m": hit["sort"][0]}
+            for hit in result["hits"]["hits"]
+        ],
+    }
 
 
 @st.cache_data(ttl=300)
@@ -238,6 +277,61 @@ def show_dog_parks(choice, parks):
     st.link_button("Open the dog play area dataset", PARKS_SOURCE_URL)
 
 
+def stop_label(stop):
+    if stop.get("on_street") and stop.get("at_street"):
+        return f"{stop['on_street'].title()} at {stop['at_street'].title()}"
+    return stop.get("stop_name") or "Unnamed stop"
+
+
+def show_stops(choice, stops):
+    st.subheader("Muni stops")
+    st.metric(
+        f"Within {miles(RADIUS_M):.1f} miles ({RADIUS_M / 1000:g} km)",
+        stops["total"],
+    )
+
+    st.warning(
+        "Distances are straight-line from the address, not walking routes. "
+        "This covers Muni stops only (bus and Muni Metro, one entry per "
+        "direction), not BART, and says nothing about routes or how often "
+        "service runs."
+    )
+
+    if not stops["records"]:
+        st.info(f"No Muni stops found within {RADIUS_M / 1000:g} km.")
+        return
+
+    points = [{"lat": choice["lat"], "lon": choice["lon"], "color": "#d62728"}]
+    points += [
+        {"lat": s["location"]["lat"], "lon": s["location"]["lon"], "color": "#1f77b4"}
+        for s in stops["records"]
+    ]
+    st.map(pd.DataFrame(points), latitude="lat", longitude="lon", color="color")
+    st.caption("Red: the address. Blue: Muni stops.")
+
+    st.markdown("**Nearest first**")
+    st.caption(
+        f"Showing {len(stops['records'])} of {stops['total']:,} stops within "
+        f"{RADIUS_M / 1000:g} km."
+    )
+
+    for stop in stops["records"]:
+        lat, lon = stop["location"]["lat"], stop["location"]["lon"]
+        distance = f"{miles(stop['distance_m']):.2f} mi"
+
+        with st.expander(f"{distance} · {stop_label(stop)}"):
+            st.write(f"**{stop_label(stop)}**")
+            st.caption(f"Stop name in the data: {stop.get('stop_name') or 'Unknown'}")
+            st.caption(f"Stop ID: {stop['stop_id']}")
+            st.caption(f"Straight-line distance: {stop['distance_m']:,.0f} m")
+            st.link_button(
+                "Open in Google Maps",
+                f"https://www.google.com/maps/search/?api=1&query={lat},{lon}",
+            )
+
+    st.link_button("Open the Muni stops dataset", STOPS_SOURCE_URL)
+
+
 def show_cases(cases, window):
     st.subheader("311 cases near this address")
     st.metric(
@@ -293,14 +387,19 @@ def show_cases(cases, window):
     st.link_button("Open the original 311 dataset", CASES_SOURCE_URL)
 
 
-def show_report(choice, cases, parks, window):
+def show_report(choice, cases, parks, stops, window):
     st.subheader("Report for prospective tenants")
 
     selected_cases = cases["records"][:40] if cases else []
+    nearest_stops = [
+        {"name": stop_label(s), "distance_m": s["distance_m"]}
+        for s in stops["records"]
+    ]
     st.caption(
         "The AI report uses the category counts, the "
         f"{len(selected_cases)} most recent 311 cases within "
-        f"{CASE_RADIUS_M} m, and the nearby dog play areas. "
+        f"{CASE_RADIUS_M} m, the nearby dog play areas, and the "
+        f"{len(nearest_stops)} nearest Muni stops. "
         "Each case’s notes are limited to 500 characters."
     )
 
@@ -308,6 +407,8 @@ def show_report(choice, cases, parks, window):
         choice["label"],
         tuple(c["service_request_id"] for c in selected_cases),
         tuple((p["funcarea_id"], round(p["distance_m"])) for p in parks),
+        stops["total"],
+        tuple((s["name"], round(s["distance_m"])) for s in nearest_stops),
     )
 
     if st.button("Generate report", type="primary"):
@@ -320,6 +421,8 @@ def show_report(choice, cases, parks, window):
                     cases["categories"] if cases else {},
                     selected_cases,
                     parks,
+                    stops["total"],
+                    nearest_stops,
                 )
             st.session_state["tenant_report"] = {"key": report_key, "report": report}
         except Exception:
@@ -341,6 +444,8 @@ def show_report(choice, cases, parks, window):
     st.write(report["summary"])
     st.markdown("**Dog parks**")
     st.write(report["dog_parks"])
+    st.markdown("**Muni stops**")
+    st.write(report["transit"])
 
     if not report["findings"]:
         st.info(
@@ -449,6 +554,15 @@ except Exception:
     )
 
 try:
+    stops = get_stops(choice["lat"], choice["lon"])
+except Exception:
+    stops = None
+    st.error(
+        "Could not retrieve Muni stops. Check your Elasticsearch "
+        "connection, API key, and index name."
+    )
+
+try:
     cases = get_cases(choice["lat"], choice["lon"])
     window = get_case_window()
 except Exception:
@@ -459,11 +573,14 @@ except Exception:
         "connection, API key, and index name."
     )
 
-if parks is not None and cases is not None:
-    show_report(choice, cases, parks, window)
+if parks is not None and cases is not None and stops is not None:
+    show_report(choice, cases, parks, stops, window)
 
 if parks is not None:
     show_dog_parks(choice, parks)
+
+if stops is not None:
+    show_stops(choice, stops)
 
 if cases is not None:
     show_cases(cases, window)
