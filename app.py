@@ -459,11 +459,11 @@ except Exception:
         "connection, API key, and index name."
     )
 
+if parks is not None and cases is not None:
+    show_report(choice, cases, parks, window)
+
 if parks is not None:
     show_dog_parks(choice, parks)
 
 if cases is not None:
     show_cases(cases, window)
-
-if parks is not None and cases is not None:
-    show_report(choice, cases, parks, window)
