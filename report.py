@@ -2,19 +2,19 @@ import json
 import os
 
 from mistralai.client import Mistral
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class Finding(BaseModel):
     observation: str
     landlord_question: str
-    case_ids: list[str] = Field(min_length=1, max_length=5)
+    case_ids: list[str]
 
 
 class TenantReport(BaseModel):
     summary: str
     dog_parks: str
-    findings: list[Finding] = Field(max_length=4)
+    findings: list[Finding]
 
 
 SYSTEM_PROMPT = """
@@ -114,8 +114,13 @@ def generate_report(address, radius_m, window, category_counts, cases, parks):
 
     allowed_ids = {c["service_request_id"] for c in evidence}
 
-    for finding in report.findings:
-        if not set(finding.case_ids).issubset(allowed_ids):
-            raise ValueError("The report referenced an unknown case.")
+    # The model sometimes mis-copies a 12-digit id or cites too many, so keep
+    # only verified ids instead of discarding the whole report.
+    verified = []
 
-    return report.model_dump()
+    for finding in report.findings:
+        ids = [i for i in dict.fromkeys(finding.case_ids) if i in allowed_ids][:5]
+        if ids:
+            verified.append({**finding.model_dump(), "case_ids": ids})
+
+    return {**report.model_dump(), "findings": verified[:4]}
