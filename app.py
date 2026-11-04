@@ -1,4 +1,5 @@
 import os
+import re
 
 import pandas as pd
 import requests
@@ -27,6 +28,30 @@ st.set_page_config(
     page_icon="🐕",
     layout="centered",
 )
+
+
+ORDINAL = re.compile(r"0*(\d+)(ST|ND|RD|TH)")
+SPECIAL_WORDS = {"OFARRELL": "O'Farrell", "O'FARRELL": "O'Farrell"}
+
+
+def pretty_word(word):
+    upper = word.upper()
+    ordinal = ORDINAL.fullmatch(upper)
+
+    if ordinal:
+        return f"{int(ordinal[1])}{ordinal[2].lower()}"
+    if upper in SPECIAL_WORDS:
+        return SPECIAL_WORDS[upper]
+    if "-" in word:
+        return "-".join(pretty_word(part) for part in word.split("-"))
+    if upper.startswith("MC") and len(upper) > 3 and upper[2].isalpha():
+        return f"Mc{upper[2]}{upper[3:].lower()}"
+    return word.capitalize()
+
+
+def pretty(text):
+    # str.title() turns "6TH" into "6Th" and "MCALLISTER" into "Mcallister".
+    return " ".join(pretty_word(word) for word in text.split())
 
 
 @st.cache_resource
@@ -85,7 +110,7 @@ def nearest_address(lat, lon):
 
     if not rows:
         return None
-    return f"{rows[0]['address'].title()}, San Francisco {rows[0].get('zip_code', '')}".strip()
+    return f"{pretty(rows[0]['address'])}, San Francisco {rows[0].get('zip_code', '')}".strip()
 
 
 @st.cache_data(ttl=300)
@@ -267,7 +292,7 @@ def show_dog_parks(choice, parks):
                 st.caption(f"Size: {park['square_feet']:,.0f} sq ft")
             st.caption(
                 f"Straight-line distance: {park['distance_m']:,.0f} m "
-                f"from {choice['label'].split(',')[0].title()}"
+                f"from {pretty(choice['label'].split(',')[0])}"
             )
             st.link_button(
                 "Open in Google Maps",
@@ -279,7 +304,7 @@ def show_dog_parks(choice, parks):
 
 def stop_label(stop):
     if stop.get("on_street") and stop.get("at_street"):
-        return f"{stop['on_street'].title()} at {stop['at_street'].title()}"
+        return f"{pretty(stop['on_street'])} at {pretty(stop['at_street'])}"
     return stop.get("stop_name") or "Unnamed stop"
 
 
@@ -483,7 +508,7 @@ def show_report(choice, cases, parks, stops, window):
 
 st.title("Before You Rent")
 st.write(
-    "See the dog play areas and 311 activity near an address "
+    "See the dog play areas, Muni stops, and 311 activity near an address "
     "before you sign a lease."
 )
 
