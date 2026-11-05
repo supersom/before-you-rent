@@ -479,11 +479,12 @@ def show_report(choice, cases, parks, stops, window):
         )
 
     for i, finding in enumerate(report["findings"], start=1):
-        st.markdown(f"**Finding {i}**")
+        heading = finding.get("heading") or f"Finding {i}"
+        st.markdown(f"**{heading}**")
         st.write(finding["observation"])
         st.write("Ask the landlord:", finding["landlord_question"])
 
-        with st.expander(f"Supporting cases for finding {i}"):
+        with st.expander(f"Supporting cases: {heading}"):
             for case_id in finding["case_ids"]:
                 source = evidence_by_id[case_id]
                 st.caption(

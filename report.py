@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 
 class Finding(BaseModel):
+    heading: str = ""
     observation: str
     landlord_question: str
     case_ids: list[str]
@@ -33,6 +34,7 @@ Return a JSON object with this structure:
   "transit": "1-3 sentences on the nearby Muni stops, or a statement that none are nearby.",
   "findings": [
     {
+      "heading": "A neutral 2-5 word topic label, such as 'Sidewalk cleanliness'.",
       "observation": "A short, cautious description of a reported issue.",
       "landlord_question": "A specific question to ask the landlord or building manager.",
       "case_ids": ["an exact supplied service_request_id"]
@@ -41,6 +43,8 @@ Return a JSON object with this structure:
 }
 
 Rules:
+- Each finding's heading names its topic only. It must not assert that a
+  condition exists, and no two findings should share a heading.
 - Produce up to four findings, prioritizing issues that affect daily living
   (noise, sanitation, pests, street conditions, safety-related reports).
 - 311 cases are reports by the public, located near the address by
