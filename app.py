@@ -1,3 +1,4 @@
+import math
 import os
 import re
 
@@ -240,6 +241,37 @@ def miles(meters):
     return meters / METERS_PER_MILE
 
 
+def map_frame(choice, markers, color):
+    # st.map sizes circles in meters but zooms to fit the points with no
+    # margin, so the default swamps a tight map and edge points get clipped.
+    # Scale the markers with the spread, and add two invisible corner points
+    # so the view is centered on the address with room around the farthest one.
+    farthest = max(distance for _, _, distance in markers)
+    radius = max(6, 0.035 * farthest)
+    half = 1.4 * max(farthest, 60)
+    dlat = half / 111_320
+    dlon = half / (111_320 * math.cos(math.radians(choice["lat"])))
+
+    points = [
+        {"lat": choice["lat"], "lon": choice["lon"], "color": "#d62728", "size": radius * 1.5}
+    ]
+    points += [
+        {"lat": lat, "lon": lon, "color": color, "size": radius}
+        for lat, lon, _ in markers
+    ]
+    points += [
+        {"lat": choice["lat"] + sign * dlat, "lon": choice["lon"] + sign * dlon,
+         "color": "#00000000", "size": 1}
+        for sign in (-1, 1)
+    ]
+
+    # st.map's automatic zoom is too coarse, so derive it: meters per pixel at
+    # zoom z is 78271.5 * cos(lat) / 2**z, and the map is 500 px tall.
+    meters_per_pixel = 2 * half * 1.1 / 500
+    zoom = round(math.log2(78_271.5 * math.cos(math.radians(choice["lat"])) / meters_per_pixel))
+    return pd.DataFrame(points), max(10, min(zoom, 18))
+
+
 def display_date(value):
     return value[:10] if value else "Unknown"
 
@@ -262,12 +294,12 @@ def show_dog_parks(choice, parks):
         st.info(f"No dog play areas found within {RADIUS_M / 1000:g} km.")
         return
 
-    points = [{"lat": choice["lat"], "lon": choice["lon"], "color": "#d62728"}]
-    points += [
-        {"lat": p["location"]["lat"], "lon": p["location"]["lon"], "color": "#2ca02c"}
-        for p in parks
-    ]
-    st.map(pd.DataFrame(points), latitude="lat", longitude="lon", color="color")
+    frame, zoom = map_frame(
+        choice,
+        [(p["location"]["lat"], p["location"]["lon"], p["distance_m"]) for p in parks],
+        "#2ca02c",
+    )
+    st.map(frame, latitude="lat", longitude="lon", color="color", size="size", zoom=zoom)
     st.caption("Red: the address. Green: dog play areas.")
 
     st.markdown("**Nearest first**")
@@ -326,12 +358,12 @@ def show_stops(choice, stops):
         st.info(f"No Muni stops found within {RADIUS_M / 1000:g} km.")
         return
 
-    points = [{"lat": choice["lat"], "lon": choice["lon"], "color": "#d62728"}]
-    points += [
-        {"lat": s["location"]["lat"], "lon": s["location"]["lon"], "color": "#1f77b4"}
-        for s in stops["records"]
-    ]
-    st.map(pd.DataFrame(points), latitude="lat", longitude="lon", color="color")
+    frame, zoom = map_frame(
+        choice,
+        [(s["location"]["lat"], s["location"]["lon"], s["distance_m"]) for s in stops["records"]],
+        "#1f77b4",
+    )
+    st.map(frame, latitude="lat", longitude="lon", color="color", size="size", zoom=zoom)
     st.caption("Red: the address. Blue: Muni stops.")
 
     st.markdown("**Nearest first**")
